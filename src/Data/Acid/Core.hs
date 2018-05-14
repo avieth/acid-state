@@ -53,6 +53,8 @@ import Unsafe.Coerce                      ( unsafeCoerce )
 
 import Data.Typeable.Internal             ( TypeRep (..), tyConModule )
 
+import GHC.Stack
+
 -- in base >= 4.4 the Show instance for TypeRep no longer provides a
 -- fully qualified name. But we have old data around that expects the
 -- FQN. So we will recreate the old naming system for newer versions
@@ -144,21 +146,22 @@ withCoreState core = withMVar (coreState core)
 --   This function is used when running events from a log-file or from another
 --   server. Events that originate locally are most likely executed with
 --   the faster 'runHotMethod'.
-runColdMethod :: Core st -> Tagged Lazy.ByteString -> IO Lazy.ByteString
-runColdMethod core taggedMethod
-    = modifyCoreState core $ \st ->
+runColdMethod :: HasCallStack => Core st -> Tagged Lazy.ByteString -> IO Lazy.ByteString
+runColdMethod core taggedMethod = do
+  print taggedMethod
+  modifyCoreState core $ \st ->
       do let (a, st') = runState (lookupColdMethod core taggedMethod) st
          return ( st', a)
 
 -- | Find the state action that corresponds to a tagged and serialized method.
-lookupColdMethod :: Core st -> Tagged Lazy.ByteString -> State st Lazy.ByteString
+lookupColdMethod :: HasCallStack => Core st -> Tagged Lazy.ByteString -> State st Lazy.ByteString
 lookupColdMethod core (storedMethodTag, methodContent)
     = case Map.lookup storedMethodTag (coreMethods core) of
         Nothing      -> missingMethod storedMethodTag
         Just (Method method)
           -> liftM (runPutLazy . safePut) (method (lazyDecode methodContent))
 
-lazyDecode :: SafeCopy a => Lazy.ByteString -> a
+lazyDecode :: (HasCallStack, SafeCopy a) => Lazy.ByteString -> a
 lazyDecode inp
     = case runGetLazy safeGet inp of
         Left msg  -> error msg

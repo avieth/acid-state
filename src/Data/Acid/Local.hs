@@ -45,6 +45,7 @@ import Data.IORef
 import System.FilePath                ( (</>), takeDirectory )
 import System.FileLock
 import System.Directory               ( createDirectoryIfMissing )
+import GHC.Stack
 
 
 {-| State container offering full ACID (Atomicity, Consistency, Isolation and Durability)
@@ -127,7 +128,7 @@ scheduleLocalUpdate' acidState event mvar
          return act
     where hotMethod = lookupHotMethod (coreMethods (localCore acidState)) event
 
-scheduleLocalColdUpdate :: LocalState st -> Tagged ByteString -> IO (MVar ByteString)
+scheduleLocalColdUpdate :: HasCallStack => LocalState st -> Tagged ByteString -> IO (MVar ByteString)
 scheduleLocalColdUpdate acidState event
     = do mvar <- newEmptyMVar
          modifyCoreState_ (localCore acidState) $ \st ->
@@ -144,7 +145,7 @@ scheduleLocalColdUpdate acidState event
 -- localCopy and return the result mvar - returns an IO action to do this
 -- instead. Take care to run actions of multiple Updates in the correct order as
 -- otherwise Queries will operate on outdated state.
-scheduleLocalColdUpdate' :: LocalState st -> Tagged ByteString -> MVar ByteString -> IO (IO ())
+scheduleLocalColdUpdate' :: HasCallStack => LocalState st -> Tagged ByteString -> MVar ByteString -> IO (IO ())
 scheduleLocalColdUpdate' acidState event mvar
     = do act <- modifyCoreState (localCore acidState) $ \st ->
            do let !(result, !st') = runState coldMethod st
@@ -166,7 +167,7 @@ localQuery acidState event
     where hotMethod = lookupHotMethod (coreMethods (localCore acidState)) event
 
 -- Whoa, a buttload of refactoring is needed here. 2011-11-02
-localQueryCold  :: LocalState st -> Tagged ByteString -> IO ByteString
+localQueryCold  :: HasCallStack => LocalState st -> Tagged ByteString -> IO ByteString
 localQueryCold acidState event
     = do st <- readIORef (localCopy acidState)
          let (result, _st) = runState coldMethod st
@@ -221,7 +222,7 @@ instance SafeCopy Checkpoint where
 -- | Create an AcidState given an initial value.
 --
 --   This will create or resume a log found in the \"state\/[typeOf state]\/\" directory.
-openLocalState :: (Typeable st, IsAcidic st)
+openLocalState :: (HasCallStack, Typeable st, IsAcidic st)
               => st                          -- ^ Initial state value. This value is only used if no checkpoint is
                                              --   found.
               -> IO (AcidState st)
@@ -246,7 +247,7 @@ prepareLocalState initialState =
 --   This will create or resume a log found in @directory@.
 --   Running two AcidState's from the same directory is an error
 --   but will not result in dataloss.
-openLocalStateFrom :: (IsAcidic st)
+openLocalStateFrom :: (IsAcidic st, HasCallStack)
                   => FilePath            -- ^ Location of the checkpoint and transaction files.
                   -> st                  -- ^ Initial state value. This value is only used if no checkpoint is
                                          --   found.
@@ -259,7 +260,7 @@ openLocalStateFrom directory initialState =
 --   This will create or resume a log found in @directory@.
 --   The most recent checkpoint will be loaded immediately but the AcidState will not be opened
 --   until the returned function is executed.
-prepareLocalStateFrom :: (IsAcidic st)
+prepareLocalStateFrom :: (IsAcidic st, HasCallStack)
                   => FilePath            -- ^ Location of the checkpoint and transaction files.
                   -> st                  -- ^ Initial state value. This value is only used if no checkpoint is
                                          --   found.
@@ -269,7 +270,7 @@ prepareLocalStateFrom directory initialState =
 
 
 
-resumeLocalStateFrom :: (IsAcidic st)
+resumeLocalStateFrom :: (IsAcidic st, HasCallStack)
                   => FilePath            -- ^ Location of the checkpoint and transaction files.
                   -> st                  -- ^ Initial state value. This value is only used if no checkpoint is
                                          --   found.
@@ -302,11 +303,13 @@ resumeLocalStateFrom directory initialState delayLocking =
           case runGetLazy safeGet content of
             Left msg  -> checkpointRestoreError msg
             Right val -> return (eventCutOff, val)
+    replayEvents :: (IsAcidic st1, HasCallStack) => FileLock -> EntryId -> st1 -> IO (AcidState st1)
     replayEvents lock n st = do
       core <- mkCore (eventsToMethods acidEvents) st
 
       eventsLog <- openFileLog eventsLogKey
       events <- readEntriesFrom eventsLog n
+      print events
       mapM_ (runColdMethod core) events
       ensureLeastEntryId eventsLog n
       checkpointsLog <- openFileLog checkpointsLogKey
